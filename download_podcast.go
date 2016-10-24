@@ -83,7 +83,7 @@ func getUrls(feed string) ([]string, error) {
 	return u, nil
 }
 
-func downloadUrl(url, destDir string, verbose bool) error {
+func downloadUrl(url, destDir string, verbose, skipDownload bool) error {
 	base := path.Base(url)
 	if len(base) == 0 || base == "." || base == ".." {
 		return fmt.Errorf("Unable to get valid filename from %v", url)
@@ -100,23 +100,25 @@ func downloadUrl(url, destDir string, verbose bool) error {
 		return nil
 	}
 
-	destPath := filepath.Join(destDir, base)
-	if verbose {
-		log.Printf("Downloading %v to %v", url, destPath)
-	}
-	body, err := openUrl(url)
-	if err != nil {
-		return err
-	}
-	defer body.Close()
+	if !skipDownload {
+		destPath := filepath.Join(destDir, base)
+		if verbose {
+			log.Printf("Downloading %v to %v", url, destPath)
+		}
+		body, err := openUrl(url)
+		if err != nil {
+			return err
+		}
+		defer body.Close()
 
-	f, err := os.Create(destPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if _, err = io.Copy(f, body); err != nil {
-		return err
+		f, err := os.Create(destPath)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		if _, err = io.Copy(f, body); err != nil {
+			return err
+		}
 	}
 
 	if verbose {
@@ -132,10 +134,11 @@ func downloadUrl(url, destDir string, verbose bool) error {
 
 func main() {
 	var feed, dest string
-	var quiet bool
+	var quiet, skip bool
 	flag.StringVar(&dest, "dest", filepath.Join(os.Getenv("HOME"), "temp", "podcasts"), "Directory where files should be saved")
 	flag.StringVar(&feed, "feed", "", "Feed to mirror")
 	flag.BoolVar(&quiet, "quiet", false, "Suppress informational logging")
+	flag.BoolVar(&skip, "skip", false, "Mark files as downloaded without downloading")
 	flag.Parse()
 
 	urls, err := getUrls(feed)
@@ -143,6 +146,6 @@ func main() {
 		log.Fatalf("Failed to extract URLs from %v: %v", feed, err)
 	}
 	for _, u := range urls {
-		downloadUrl(u, dest, !quiet)
+		downloadUrl(u, dest, !quiet, skip)
 	}
 }
