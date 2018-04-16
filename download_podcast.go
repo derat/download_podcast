@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	_ "crypto/sha512"
 )
@@ -87,6 +88,10 @@ func getUrls(feed string) ([]string, error) {
 
 func downloadUrl(url, destDir string, verbose, skipDownload bool) error {
 	base := path.Base(url)
+	if i := strings.IndexByte(base, '?'); i != -1 {
+		base = base[0:i]
+	}
+
 	if len(base) == 0 || base == "." || base == ".." {
 		return fmt.Errorf("Unable to get valid filename from %v", url)
 	}
