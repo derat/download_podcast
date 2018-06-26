@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -86,23 +87,28 @@ func getUrls(feed string) ([]string, error) {
 	return u, nil
 }
 
-func downloadUrl(url, destDir string, verbose, skipDownload bool) error {
-	base := path.Base(url)
+func downloadUrl(u, destDir string, verbose, skipDownload bool) error {
+	base := path.Base(u)
 	if i := strings.IndexByte(base, '?'); i != -1 {
 		base = base[0:i]
 	}
 
 	if len(base) == 0 || base == "." || base == ".." {
-		return fmt.Errorf("Unable to get valid filename from %v", url)
+		return fmt.Errorf("Unable to get valid filename from %v", u)
 	}
 	if err := os.MkdirAll(filepath.Join(destDir, seenSubdir), 0755); err != nil {
 		return err
 	}
 
-	seenPath := filepath.Join(destDir, seenSubdir, base)
-	if _, err := os.Stat(seenPath); err == nil {
+	seenPath := filepath.Join(destDir, seenSubdir, url.PathEscape(u))
+	oldSeenPath := filepath.Join(destDir, seenSubdir, base)
+	exists := func(p string) bool {
+		_, err := os.Stat(p)
+		return err == nil
+	}
+	if exists(seenPath) || exists(oldSeenPath) {
 		if verbose {
-			log.Printf("Skipping %v", url)
+			log.Printf("Skipping %v", u)
 		}
 		return nil
 	}
@@ -110,9 +116,9 @@ func downloadUrl(url, destDir string, verbose, skipDownload bool) error {
 	if !skipDownload {
 		destPath := filepath.Join(destDir, base)
 		if verbose {
-			log.Printf("Downloading %v to %v", url, destPath)
+			log.Printf("Downloading %v to %v", u, destPath)
 		}
-		body, err := openUrl(url)
+		body, err := openUrl(u)
 		if err != nil {
 			return err
 		}
