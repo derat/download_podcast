@@ -25,11 +25,11 @@ const (
 func getMatch(re, s string) (string, error) {
 	r, err := regexp.Compile(re)
 	if err != nil {
-		return "", fmt.Errorf("Couldn't compile regular expression")
+		return "", fmt.Errorf("couldn't compile %q", re)
 	}
 	m := r.Find([]byte(s))
 	if m == nil {
-		return "", fmt.Errorf("Didn't find regular expression %q", re)
+		return "", fmt.Errorf("didn't find %q", re)
 	}
 	return string(m), nil
 }
@@ -37,9 +37,9 @@ func getMatch(re, s string) (string, error) {
 func openUrl(u string) (io.ReadCloser, error) {
 	resp, err := http.Get(u)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to fetch URL: %v", err)
+		return nil, fmt.Errorf("failed to fetch %v: %v", u, err)
 	} else if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("Server returned %v", resp.StatusCode)
+		return nil, fmt.Errorf("server returned %v for %v", resp.StatusCode, u)
 	}
 	return resp.Body, nil
 }
@@ -94,7 +94,7 @@ func downloadUrl(u, destDir string, verbose, skipDownload bool) error {
 	}
 
 	if len(base) == 0 || base == "." || base == ".." {
-		return fmt.Errorf("Unable to get valid filename from %v", u)
+		return fmt.Errorf("unable to get valid filename from %v", u)
 	}
 	if err := os.MkdirAll(filepath.Join(destDir, seenSubdir), 0755); err != nil {
 		return err
