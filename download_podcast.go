@@ -87,7 +87,7 @@ func getUrls(feed string) ([]string, error) {
 	return u, nil
 }
 
-func downloadUrl(u, destDir string, verbose, skipDownload bool) error {
+func downloadUrl(u, destDir, prefix string, verbose, skipDownload bool) error {
 	base := path.Base(u)
 	if i := strings.IndexByte(base, '?'); i != -1 {
 		base = base[0:i]
@@ -114,7 +114,7 @@ func downloadUrl(u, destDir string, verbose, skipDownload bool) error {
 	}
 
 	if !skipDownload {
-		destPath := filepath.Join(destDir, base)
+		destPath := filepath.Join(destDir, prefix+base)
 		if verbose {
 			log.Printf("Downloading %v to %v", u, destPath)
 		}
@@ -146,10 +146,11 @@ func downloadUrl(u, destDir string, verbose, skipDownload bool) error {
 }
 
 func main() {
-	var feed, dest string
+	var feed, dest, prefix string
 	var quiet, skip bool
 	flag.StringVar(&dest, "dest", filepath.Join(os.Getenv("HOME"), "temp", "podcasts"), "Directory where files should be saved")
-	flag.StringVar(&feed, "feed", "", "Feed to mirror")
+	flag.StringVar(&feed, "feed", "", "URL of feed to mirror")
+	flag.StringVar(&prefix, "prefix", "", "Prefix to prepend to filenames")
 	flag.BoolVar(&quiet, "quiet", false, "Suppress informational logging")
 	flag.BoolVar(&skip, "skip", false, "Mark files as downloaded without downloading")
 	flag.Parse()
@@ -159,7 +160,7 @@ func main() {
 		log.Fatalf("Failed to extract URLs from %v: %v", feed, err)
 	}
 	for _, u := range urls {
-		if err = downloadUrl(u, dest, !quiet, skip); err != nil {
+		if err = downloadUrl(u, dest, prefix, !quiet, skip); err != nil {
 			log.Printf("Failed to download %v: %v", u, err)
 		}
 	}
