@@ -148,18 +148,24 @@ func downloadUrl(u, destDir, prefix string, verbose, skipDownload bool) error {
 func main() {
 	var feed, dest, prefix string
 	var quiet, skip bool
+	var num int
 	flag.StringVar(&dest, "dest", filepath.Join(os.Getenv("HOME"), "temp", "podcasts"), "Directory where files should be saved")
 	flag.StringVar(&feed, "feed", "", "URL of feed to mirror")
 	flag.StringVar(&prefix, "prefix", "", "Prefix to prepend to filenames")
 	flag.BoolVar(&quiet, "quiet", false, "Suppress informational logging")
 	flag.BoolVar(&skip, "skip", false, "Mark files as downloaded without downloading")
+	flag.IntVar(&num, "num", -1, "Maximum number of files to mirror")
 	flag.Parse()
 
 	urls, err := getUrls(feed)
 	if err != nil {
 		log.Fatalf("Failed to extract URLs from %v: %v", feed, err)
 	}
-	for _, u := range urls {
+
+	for i, u := range urls {
+		if num >= 0 && i >= num {
+			break
+		}
 		if err = downloadUrl(u, dest, prefix, !quiet, skip); err != nil {
 			log.Printf("Failed to download %v: %v", u, err)
 		}
