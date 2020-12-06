@@ -16,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	_ "crypto/sha512"
@@ -24,6 +25,8 @@ import (
 const (
 	// Subdirectory in the destination dir used to track already-downloaded files.
 	seenSubdir = ".seen"
+	// Maximum length for filenames.
+	maxFilenameLen = 255
 )
 
 func getMatch(re, s string) (string, error) {
@@ -94,7 +97,7 @@ func getUrls(feed string) ([]string, error) {
 func downloadUrl(u, destDir, prefix string, verbose, skipDownload bool) error {
 	base := path.Base(u)
 	if i := strings.IndexByte(base, '?'); i != -1 {
-		base = base[0:i]
+		base = base[:i]
 	}
 
 	if len(base) == 0 || base == "." || base == ".." {
@@ -104,7 +107,11 @@ func downloadUrl(u, destDir, prefix string, verbose, skipDownload bool) error {
 		return err
 	}
 
-	seenPath := filepath.Join(destDir, seenSubdir, url.PathEscape(u))
+	esc := url.PathEscape(u)
+	if len(esc) > maxFilenameLen {
+		esc = esc[:maxFilenameLen]
+	}
+	seenPath := filepath.Join(destDir, seenSubdir, esc)
 	oldSeenPath := filepath.Join(destDir, seenSubdir, base)
 	exists := func(p string) bool {
 		_, err := os.Stat(p)
@@ -119,6 +126,21 @@ func downloadUrl(u, destDir, prefix string, verbose, skipDownload bool) error {
 
 	if !skipDownload {
 		destPath := filepath.Join(destDir, prefix+base)
+		if _, err := os.Stat(destPath); err == nil {
+			// Simplecast uses horrendous URLs that are hundreds of bytes in length but always
+			// reference a file named "default.mp3", with query parameters used to specify podcast
+			// and episode IDs. If the base filename already exists, append a number to its
+			// pre-extension part.
+			ext := filepath.Ext(base)
+			start := base[:len(base)-len(ext)]
+			for i := 0; i >= 0; i++ {
+				destPath = filepath.Join(destDir, prefix+start+strconv.Itoa(i)+ext)
+				if _, err := os.Stat(destPath); err != nil {
+					break // found an unused filename
+				}
+			}
+		}
+
 		if verbose {
 			log.Printf("Downloading %v to %v", u, destPath)
 		}
