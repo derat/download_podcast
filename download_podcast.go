@@ -6,6 +6,7 @@ package main
 
 import (
 	"encoding/xml"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -51,7 +52,11 @@ func openURL(u string) (io.ReadCloser, error) {
 	return resp.Body, nil
 }
 
-func getURLs(feed string) ([]string, error) {
+type item struct {
+	url, title string
+}
+
+func getItems(feed string) ([]item, error) {
 	body, err := openURL(feed)
 	if err != nil {
 		return nil, err
@@ -61,7 +66,13 @@ func getURLs(feed string) ([]string, error) {
 	d := xml.NewDecoder(body)
 	d.Strict = false
 
-	urls := make(map[string]bool)
+	var items []item
+	seenURLs := make(map[string]struct{})
+	var title string
+	var inTitle bool
+
+	// This is a bogus way to parse the XML, and it depends on titles appearing before
+	// enclosures within each item. Oh well, seems to work.
 	for {
 		t, err := d.Token()
 		if err == io.EOF {
@@ -70,28 +81,37 @@ func getURLs(feed string) ([]string, error) {
 			return nil, err
 		}
 
-		e, ok := t.(xml.StartElement)
-		if !ok {
-			continue
-		}
-
-		if e.Name.Local == "media:content" || e.Name.Local == "enclosure" {
-			for _, a := range e.Attr {
-				if a.Name.Local == "url" {
-					urls[a.Value] = true
-					break
+		switch e := t.(type) {
+		case xml.StartElement:
+			switch e.Name.Local {
+			case "media:content", "enclosure":
+				for _, a := range e.Attr {
+					if a.Name.Local == "url" {
+						url := a.Value
+						if _, ok := seenURLs[url]; !ok {
+							items = append(items, item{url, title})
+							seenURLs[url] = struct{}{}
+							title = ""
+						}
+						break
+					}
 				}
+			case "title":
+				inTitle = true
+			}
+		case xml.EndElement:
+			switch e.Name.Local {
+			case "title":
+				inTitle = false
+			}
+		case xml.CharData:
+			if inTitle {
+				title = string(e)
 			}
 		}
 	}
 
-	u := make([]string, len(urls), len(urls))
-	i := 0
-	for v, _ := range urls {
-		u[i] = v
-		i++
-	}
-	return u, nil
+	return items, nil
 }
 
 // Simplecast uses bullshit URLs like the following:
@@ -99,23 +119,30 @@ func getURLs(feed string) ([]string, error) {
 // Grab the episode ID so we don't try to name everything default.mp3.
 var episodeIDRegexp = regexp.MustCompile(`/episodes/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/`)
 
-func downloadURL(u, destDir, prefix string, verbose, skipDownload bool) error {
-	base := path.Base(u)
+func downloadItem(item item, destDir, prefix string, verbose, skipDownload bool) error {
+	base := path.Base(item.url)
 	if i := strings.IndexByte(base, '?'); i != -1 {
 		base = base[:i]
 	}
-	if m := episodeIDRegexp.FindStringSubmatch(u); m != nil {
-		base = m[1] + ".mp3"
+
+	// If this is a crappy Simplecast URL, use the title from the feed if we have it
+	// before falling back to the UUID.
+	if m := episodeIDRegexp.FindStringSubmatch(item.url); m != nil {
+		if item.title != "" {
+			base = item.title + ".mp3"
+		} else {
+			base = m[1] + ".mp3"
+		}
 	}
 
 	if len(base) == 0 || base == "." || base == ".." {
-		return fmt.Errorf("unable to get valid filename from %v", u)
+		return errors.New("unable to get valid filename")
 	}
 	if err := os.MkdirAll(filepath.Join(destDir, seenSubdir), 0755); err != nil {
 		return err
 	}
 
-	esc := url.PathEscape(u)
+	esc := url.PathEscape(item.url)
 	if len(esc) > maxFilenameLen {
 		esc = esc[:maxFilenameLen]
 	}
@@ -127,7 +154,7 @@ func downloadURL(u, destDir, prefix string, verbose, skipDownload bool) error {
 	}
 	if exists(seenPath) || exists(oldSeenPath) {
 		if verbose {
-			log.Printf("Skipping %v", u)
+			log.Printf("Skipping %v", item.url)
 		}
 		return nil
 	}
@@ -147,13 +174,13 @@ func downloadURL(u, destDir, prefix string, verbose, skipDownload bool) error {
 
 	if skipDownload {
 		if verbose {
-			log.Printf("Skipping download of %v to %v", u, destPath)
+			log.Printf("Skipping download of %v to %v", item.url, destPath)
 		}
 	} else {
 		if verbose {
-			log.Printf("Downloading %v to %v", u, destPath)
+			log.Printf("Downloading %v to %v", item.url, destPath)
 		}
-		body, err := openURL(u)
+		body, err := openURL(item.url)
 		if err != nil {
 			return err
 		}
@@ -192,17 +219,17 @@ func main() {
 	flag.IntVar(&num, "num", -1, "Maximum number of files to mirror")
 	flag.Parse()
 
-	urls, err := getURLs(feed)
+	items, err := getItems(feed)
 	if err != nil {
-		log.Fatalf("Failed to extract URLs from %v: %v", feed, err)
+		log.Fatalf("Failed to extract items from %v: %v", feed, err)
 	}
 
-	for i, u := range urls {
+	for i, item := range items {
 		if num >= 0 && i >= num {
 			break
 		}
-		if err = downloadURL(u, dest, prefix, !quiet, skip); err != nil {
-			log.Printf("Failed to download %v: %v", u, err)
+		if err = downloadItem(item, dest, prefix, !quiet, skip); err != nil {
+			log.Printf("Failed to download %v: %v", item.url, err)
 		}
 	}
 }
