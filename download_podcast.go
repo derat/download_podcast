@@ -41,7 +41,7 @@ func getMatch(re, s string) (string, error) {
 	return string(m), nil
 }
 
-func openUrl(u string) (io.ReadCloser, error) {
+func openURL(u string) (io.ReadCloser, error) {
 	resp, err := http.Get(u)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch %v: %v", u, err)
@@ -51,8 +51,8 @@ func openUrl(u string) (io.ReadCloser, error) {
 	return resp.Body, nil
 }
 
-func getUrls(feed string) ([]string, error) {
-	body, err := openUrl(feed)
+func getURLs(feed string) ([]string, error) {
+	body, err := openURL(feed)
 	if err != nil {
 		return nil, err
 	}
@@ -94,10 +94,18 @@ func getUrls(feed string) ([]string, error) {
 	return u, nil
 }
 
-func downloadUrl(u, destDir, prefix string, verbose, skipDownload bool) error {
+// Simplecast uses bullshit URLs like the following:
+// https://dts.podtrac.com/redirect.mp3/nyt.simplecastaudio.com/521189a6-a4f6-404d-85cf-455a989a10a4/episodes/4a49fb56-5d6d-4800-8b83-72047d6b81e7/audio/128/default.mp3?aid=rss_feed&awCollectionId=521189a6-a4f6-404d-85cf-455a989a10a4&awEpisodeId=4a49fb56-5d6d-4800-8b83-72047d6b81e7&feed=xl36XBC2
+// Grab the episode ID so we don't try to name everything default.mp3.
+var episodeIDRegexp = regexp.MustCompile(`/episodes/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/`)
+
+func downloadURL(u, destDir, prefix string, verbose, skipDownload bool) error {
 	base := path.Base(u)
 	if i := strings.IndexByte(base, '?'); i != -1 {
 		base = base[:i]
+	}
+	if m := episodeIDRegexp.FindStringSubmatch(u); m != nil {
+		base = m[1] + ".mp3"
 	}
 
 	if len(base) == 0 || base == "." || base == ".." {
@@ -124,27 +132,28 @@ func downloadUrl(u, destDir, prefix string, verbose, skipDownload bool) error {
 		return nil
 	}
 
-	if !skipDownload {
-		destPath := filepath.Join(destDir, prefix+base)
-		if _, err := os.Stat(destPath); err == nil {
-			// Simplecast uses horrendous URLs that are hundreds of bytes in length but always
-			// reference a file named "default.mp3", with query parameters used to specify podcast
-			// and episode IDs. If the base filename already exists, append a number to its
-			// pre-extension part.
-			ext := filepath.Ext(base)
-			start := base[:len(base)-len(ext)]
-			for i := 0; i >= 0; i++ {
-				destPath = filepath.Join(destDir, prefix+start+strconv.Itoa(i)+ext)
-				if _, err := os.Stat(destPath); err != nil {
-					break // found an unused filename
-				}
+	destPath := filepath.Join(destDir, prefix+base)
+	if _, err := os.Stat(destPath); err == nil {
+		// If the base filename already exists, append a number to its pre-extension part.
+		ext := filepath.Ext(base)
+		start := base[:len(base)-len(ext)]
+		for i := 0; i >= 0; i++ {
+			destPath = filepath.Join(destDir, prefix+start+strconv.Itoa(i)+ext)
+			if _, err := os.Stat(destPath); err != nil {
+				break // found an unused filename
 			}
 		}
+	}
 
+	if skipDownload {
+		if verbose {
+			log.Printf("Skipping download of %v to %v", u, destPath)
+		}
+	} else {
 		if verbose {
 			log.Printf("Downloading %v to %v", u, destPath)
 		}
-		body, err := openUrl(u)
+		body, err := openURL(u)
 		if err != nil {
 			return err
 		}
@@ -183,7 +192,7 @@ func main() {
 	flag.IntVar(&num, "num", -1, "Maximum number of files to mirror")
 	flag.Parse()
 
-	urls, err := getUrls(feed)
+	urls, err := getURLs(feed)
 	if err != nil {
 		log.Fatalf("Failed to extract URLs from %v: %v", feed, err)
 	}
@@ -192,7 +201,7 @@ func main() {
 		if num >= 0 && i >= num {
 			break
 		}
-		if err = downloadUrl(u, dest, prefix, !quiet, skip); err != nil {
+		if err = downloadURL(u, dest, prefix, !quiet, skip); err != nil {
 			log.Printf("Failed to download %v: %v", u, err)
 		}
 	}
