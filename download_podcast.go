@@ -24,10 +24,8 @@ import (
 )
 
 const (
-	// Subdirectory in the destination dir used to track already-downloaded files.
-	seenSubdir = ".seen"
-	// Maximum length for filenames.
-	maxFilenameLen = 255
+	seenSubdir     = ".seen" // dest dir subdir for tracking already-downloaded files
+	maxFilenameLen = 255     // max length for path components
 )
 
 func getMatch(re, s string) (string, error) {
@@ -47,14 +45,13 @@ func openURL(u string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch %v: %v", u, err)
 	} else if resp.StatusCode != 200 {
+		resp.Body.Close()
 		return nil, fmt.Errorf("server returned %v for %v", resp.StatusCode, u)
 	}
 	return resp.Body, nil
 }
 
-type item struct {
-	url, title string
-}
+type item struct{ guid, url, title string }
 
 func getItems(feed string) ([]item, error) {
 	body, err := openURL(feed)
@@ -67,12 +64,9 @@ func getItems(feed string) ([]item, error) {
 	d.Strict = false
 
 	var items []item
-	seenURLs := make(map[string]struct{})
-	var title string
-	var inTitle bool
+	var inGUID, inTitle bool
+	var guid, title, url string
 
-	// This is a bogus way to parse the XML, and it depends on titles appearing before
-	// enclosures within each item. Oh well, seems to work.
 	for {
 		t, err := d.Token()
 		if err == io.EOF {
@@ -84,28 +78,43 @@ func getItems(feed string) ([]item, error) {
 		switch e := t.(type) {
 		case xml.StartElement:
 			switch e.Name.Local {
+			case "item":
+				guid = ""
+				title = ""
+				url = ""
+			case "guid":
+				inGUID = true
+			case "title":
+				inTitle = true
 			case "media:content", "enclosure":
 				for _, a := range e.Attr {
 					if a.Name.Local == "url" {
-						url := a.Value
-						if _, ok := seenURLs[url]; !ok {
-							items = append(items, item{url, title})
-							seenURLs[url] = struct{}{}
-							title = ""
-						}
+						url = a.Value
 						break
 					}
 				}
-			case "title":
-				inTitle = true
 			}
+
 		case xml.EndElement:
 			switch e.Name.Local {
+			case "item":
+				if url != "" {
+					if guid == "" {
+						guid = url
+					}
+					items = append(items, item{guid, url, title})
+				}
+			case "guid":
+				inGUID = false
 			case "title":
 				inTitle = false
 			}
+
 		case xml.CharData:
-			if inTitle {
+			switch {
+			case inGUID:
+				guid = string(e)
+			case inTitle:
 				title = string(e)
 			}
 		}
@@ -119,7 +128,7 @@ func getItems(feed string) ([]item, error) {
 // Grab the episode ID so we don't try to name everything default.mp3.
 var episodeIDRegexp = regexp.MustCompile(`/episodes/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/`)
 
-func downloadItem(item item, destDir, prefix string, verbose, skipDownload bool) error {
+func downloadItem(item item, destDir, feed, prefix string, verbose, skipDownload bool) error {
 	base := path.Base(item.url)
 	if i := strings.IndexByte(base, '?'); i != -1 {
 		base = base[:i]
@@ -138,25 +147,26 @@ func downloadItem(item item, destDir, prefix string, verbose, skipDownload bool)
 	if len(base) == 0 || base == "." || base == ".." {
 		return errors.New("unable to get valid filename")
 	}
-	if err := os.MkdirAll(filepath.Join(destDir, seenSubdir), 0755); err != nil {
+
+	// Check if we've already seen this item.
+	seenPath := filepath.Join(destDir, seenSubdir, escape(feed), escape(item.guid))
+	if err := os.MkdirAll(filepath.Dir(seenPath), 0755); err != nil {
 		return err
 	}
-
-	esc := url.PathEscape(item.url)
-	if len(esc) > maxFilenameLen {
-		esc = esc[:maxFilenameLen]
-	}
-	seenPath := filepath.Join(destDir, seenSubdir, esc)
-	oldSeenPath := filepath.Join(destDir, seenSubdir, base)
-	exists := func(p string) bool {
-		_, err := os.Stat(p)
-		return err == nil
-	}
-	if exists(seenPath) || exists(oldSeenPath) {
-		if verbose {
-			log.Printf("Skipping %v", item.url)
+	for _, p := range []string{
+		seenPath,
+		filepath.Join(destDir, seenSubdir, escape(item.url)), // old location
+		filepath.Join(destDir, seenSubdir, escape(base)),     // really old location
+	} {
+		if _, err := os.Stat(p); err == nil {
+			if verbose {
+				log.Printf("Skipping %v (%v %q)", item.url, item.guid, item.title)
+			}
+			if _, err := os.Stat(seenPath); os.IsNotExist(err) {
+				touch(seenPath) // migrate to new location
+			}
+			return nil
 		}
-		return nil
 	}
 
 	destPath := filepath.Join(destDir, prefix+base)
@@ -174,24 +184,13 @@ func downloadItem(item item, destDir, prefix string, verbose, skipDownload bool)
 
 	if skipDownload {
 		if verbose {
-			log.Printf("Skipping download of %v to %v", item.url, destPath)
+			log.Printf("Skipping download of %v (%v) to %v", item.url, item.title, destPath)
 		}
 	} else {
 		if verbose {
-			log.Printf("Downloading %v to %v", item.url, destPath)
+			log.Printf("Downloading %v (%v) to %v", item.url, item.title, destPath)
 		}
-		body, err := openURL(item.url)
-		if err != nil {
-			return err
-		}
-		defer body.Close()
-
-		f, err := os.Create(destPath)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		if _, err = io.Copy(f, body); err != nil {
+		if err := download(item.url, destPath); err != nil {
 			return err
 		}
 	}
@@ -199,36 +198,68 @@ func downloadItem(item item, destDir, prefix string, verbose, skipDownload bool)
 	if verbose {
 		log.Printf("Touching %v", seenPath)
 	}
-	sf, err := os.Create(seenPath)
+	return touch(seenPath)
+}
+
+// escape escapes fn so it can be used as a path component.
+func escape(fn string) string {
+	esc := url.PathEscape(fn)
+	if len(esc) > maxFilenameLen {
+		esc = esc[:maxFilenameLen]
+	}
+	return esc
+}
+
+// touch creates an empty file at p.
+func touch(p string) error {
+	f, err := os.Create(p)
 	if err != nil {
 		return err
 	}
-	sf.Close()
-	return nil
+	return f.Close()
+}
+
+// download downloads url to p.
+func download(url, p string) error {
+	body, err := openURL(url)
+	if err != nil {
+		return err
+	}
+	defer body.Close()
+
+	f, err := os.Create(p)
+	if err != nil {
+		return err
+	}
+	if _, err = io.Copy(f, body); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func main() {
-	var feed, dest, prefix string
-	var quiet, skip bool
-	var num int
-	flag.StringVar(&dest, "dest", filepath.Join(os.Getenv("HOME"), "temp", "podcasts"), "Directory where files should be saved")
-	flag.StringVar(&feed, "feed", "", "URL of feed to mirror")
-	flag.StringVar(&prefix, "prefix", "", "Prefix to prepend to filenames")
-	flag.BoolVar(&quiet, "quiet", false, "Suppress informational logging")
-	flag.BoolVar(&skip, "skip", false, "Mark files as downloaded without downloading")
-	flag.IntVar(&num, "num", -1, "Maximum number of files to mirror")
+	dest := flag.String("dest", filepath.Join(os.Getenv("HOME"), "temp/podcasts"), "Directory where files should be saved")
+	feed := flag.String("feed", "", "URL of feed to mirror")
+	prefix := flag.String("prefix", "", "Prefix to prepend to filenames")
+	quiet := flag.Bool("quiet", false, "Suppress informational logging")
+	skip := flag.Bool("skip", false, "Mark files as downloaded without downloading")
+	num := flag.Int("num", -1, "Maximum number of files to mirror")
 	flag.Parse()
 
-	items, err := getItems(feed)
+	if *feed == "" {
+		log.Fatal("-feed must be supplied")
+	}
+	items, err := getItems(*feed)
 	if err != nil {
-		log.Fatalf("Failed to extract items from %v: %v", feed, err)
+		log.Fatalf("Failed to extract items from %v: %v", *feed, err)
 	}
 
 	for i, item := range items {
-		if num >= 0 && i >= num {
+		if *num >= 0 && i >= *num {
 			break
 		}
-		if err = downloadItem(item, dest, prefix, !quiet, skip); err != nil {
+		if err = downloadItem(item, *dest, *feed, *prefix, !*quiet, *skip); err != nil {
 			log.Printf("Failed to download %v: %v", item.url, err)
 		}
 	}
