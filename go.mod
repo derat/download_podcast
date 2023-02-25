@@ -1,3 +1,3 @@
 module github.com/derat/download_podcast
 
-go 1.12
+go 1.19
